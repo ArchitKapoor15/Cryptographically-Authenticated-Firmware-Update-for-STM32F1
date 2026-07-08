@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+*.bin
+*.map
+asm-dump
+node_modules/
