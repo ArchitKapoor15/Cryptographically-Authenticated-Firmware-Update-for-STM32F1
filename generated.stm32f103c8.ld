@@ -8,8 +8,9 @@ MEMORY
 SECTIONS
 {
  .text : {
-    KEEP(*(.bootloader_section))
+  KEEP(*(.bootloader_section))
   *(.vectors)
+  KEEP(*(.firmware_info))
   *(.text*)
   . = ALIGN(4);
   *(.rodata*)

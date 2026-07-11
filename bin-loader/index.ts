@@ -21,7 +21,15 @@ const BL_READY_FOR_DATA       = (0x48);
 const BL_FW_UPDATE_SUCCESSFUL = (0x54);
 const BL_NACK                 = (0x59);
 
-const DEVICE_ID = (0x42);
+const VECTOR_TABLE_SIZE       = (0x150);
+const FW_INFO_SIZE            = (10*4);
+const FW_INFO_VALIDATE_FROM   = (VECTOR_TABLE_SIZE + FW_INFO_SIZE);
+
+const FW_INFO_DEV_ID_OFFSET   = (VECTOR_TABLE_SIZE + (1 * 4));
+const FW_INFO_VERSION_OFFSET  = (VECTOR_TABLE_SIZE + (2 * 4));
+const FW_INFO_LENGTH_OFFSET   = (VECTOR_TABLE_SIZE + (3 * 4));
+const FW_INFO_CRC32_OFFSET    = (VECTOR_TABLE_SIZE + (9 * 4));
+
 const SYNC_SEQ = Buffer.from([0xC4,0x55,0x7E,0x10]);
 const DEFAULT_TIMEOUT = (5000);
 
@@ -42,6 +50,23 @@ const crc8 = (data: Buffer | Array<number>) => {
         }
     }
     return crc;
+}
+
+const crc32 = (data:Buffer, length:number) => {
+    let byte;
+    let crc = 0xFFFFFFFF;
+    let mask;
+
+    for(let i=0;i<length;i++){
+        byte = data[i];
+        crc = (crc^byte)>>>0;
+
+        for(let j=0;j<8;j++){
+            mask = (-(crc&1))>>>0;
+            crc = ((crc >>> 1) ^ (0xEDB88320 & mask)) >>> 0;
+        }
+    }
+    return (~crc) >>> 0;
 }
 
 const delay = (ms:number) => new Promise(r=>setTimeout(r,ms));
@@ -224,6 +249,14 @@ const main = async () => {
     const fwLen = fwImg.length;
     Logger.success(`Read Firmware Image (${fwLen} bytes)`);
 
+    Logger.info('Injecting Firmware Info');
+    fwImg.writeUInt32LE(fwLen,FW_INFO_LENGTH_OFFSET); 
+    fwImg.writeUInt32LE(0x00000001,FW_INFO_VERSION_OFFSET);
+
+    const crcValue = crc32(fwImg.slice(FW_INFO_VALIDATE_FROM),fwLen - (VECTOR_TABLE_SIZE+FW_INFO_SIZE)); 
+    Logger.info(`Computed CRC = 0x${crcValue.toString(16).padStart(8,'0')}`);
+    fwImg.writeUInt32LE(crcValue,FW_INFO_CRC32_OFFSET);
+
     Logger.info('Attempting to sync with Bootloader');
     await syncWithBootloader();
     Logger.success('Synced!');
@@ -238,9 +271,10 @@ const main = async () => {
     Logger.info('Waiting for Device ID Request');
     await waitForSBPacket(BL_DEV_ID_REQ);
 
-    const DeviceIDPkt = new Packet(2,Buffer.from([BL_DEV_ID_RES,DEVICE_ID]));
+    const DeviceID = fwImg[FW_INFO_DEV_ID_OFFSET];
+    const DeviceIDPkt = new Packet(2,Buffer.from([BL_DEV_ID_RES,DeviceID]));
     writePacket(DeviceIDPkt.toBuffer());
-    Logger.info(`Responded with Device ID 0x${DEVICE_ID.toString(16)}`);
+    Logger.info(`Responded with Device ID 0x${DeviceID.toString(16)}`);
 
     Logger.info('Waiting for FW Len Request');
     await waitForSBPacket(BL_FW_LEN_REQ);

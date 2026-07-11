@@ -1,7 +1,7 @@
 #include <string.h>
 #include "comms.h"
 #include "core/uart.h"
-#include "core/crc8.h"
+#include "core/crc.h"
 
 #define PKT_BUFFER_SIZE 8
 

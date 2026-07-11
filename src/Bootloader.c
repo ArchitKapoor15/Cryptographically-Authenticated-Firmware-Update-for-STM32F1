@@ -2,22 +2,19 @@
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/cm3/vector.h>
+#include <libopencm3/cm3/scb.h>
 
 #include "core/uart.h"
 #include "core/system.h"
 #include "comms.h"
+#include "core/crc.h"
 #include "bl-flash.h"
 #include "core/simple-timer.h"
+#include "core/fw-info.h"
 
 #define UART_PORT GPIOA
 #define TX_PIN GPIO9
 #define RX_PIN GPIO10
-
-#define BOOTLOADER_SIZE (0x2000U)
-#define MAIN_APP_START_ADD (FLASH_BASE + BOOTLOADER_SIZE)
-#define MAX_FLASH_APP_SIZE ((1024U * 128U) - BOOTLOADER_SIZE)
-
-#define DEVICE_ID (0x42)
 
 #define SYNC_SEQ_0 (0xC4)
 #define SYNC_SEQ_1 (0x55)
@@ -60,6 +57,15 @@ static void gpio_teardown(void){
 static void jump_to_main(void){
     vector_table_t* main_vector_table = (vector_table_t*)MAIN_APP_START_ADD;
     main_vector_table->reset();
+}
+
+static bool validate_fw_img(void){
+    firmware_info_t* firmware_info = (firmware_info_t*)FW_INFO_START_ADD;
+    if(firmware_info->sentinel != FW_INFO_SENTINEL) return false;
+    if(firmware_info->device_id != DEVICE_ID) return false;
+    const uint8_t* st_add = (const uint8_t*)FW_INFO_VALIDATE_FROM;
+    const uint32_t computedCRC = crc32(st_add,FW_INFO_VALIDATE_LENGTH(firmware_info->length));
+    return computedCRC == firmware_info->crc32;
 }
 
 static void bootloading_failed(void){
@@ -252,7 +258,11 @@ int main(void){
     uart_teardown();
     system_teardown();
 
-    jump_to_main();
+    if(validate_fw_img()){
+        jump_to_main();
+    }else{
+        scb_reset_core();
+    }
 
     return 0;
 }
