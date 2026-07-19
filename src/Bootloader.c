@@ -4,6 +4,9 @@
 #include <libopencm3/cm3/vector.h>
 #include <libopencm3/cm3/scb.h>
 
+#include <string.h>
+
+#include "aes.h"
 #include "core/uart.h"
 #include "core/system.h"
 #include "comms.h"
@@ -35,6 +38,13 @@ typedef enum bl_state_t{
     State_Done,
 }bl_state_t;
 
+static const uint8_t secret_key[AES_BLOCK_SIZE] = {
+    0x00,0x01,0x02,0x03,
+    0x04,0x05,0x06,0x07,
+    0x08,0x09,0x0a,0x0b,
+    0x0c,0x0d,0x0e,0x0f,
+};
+
 static bl_state_t state = State_Sync;
 static uint32_t fw_len = 0;
 static uint32_t bytes_written = 0;
@@ -59,13 +69,63 @@ static void jump_to_main(void){
     main_vector_table->reset();
 }
 
+static void aes_cbc_mac_step(AES_Block_t aes_state,AES_Block_t prev_state,const AES_Block_t* key_schedule){
+    for(uint8_t i=0 ; i<AES_BLOCK_SIZE; i++){
+        ((uint8_t*)aes_state)[i] ^= ((uint8_t*)prev_state)[i];
+    }
+
+    AES_EncryptBlock(aes_state,key_schedule);
+    memcpy(prev_state,aes_state,AES_BLOCK_SIZE);
+}
+
 static bool validate_fw_img(void){
     firmware_info_t* firmware_info = (firmware_info_t*)FW_INFO_START_ADD;
+    const uint8_t* signature = (const uint8_t*)SIGNATURE_ADDRESS;
+
     if(firmware_info->sentinel != FW_INFO_SENTINEL) return false;
     if(firmware_info->device_id != DEVICE_ID) return false;
-    const uint8_t* st_add = (const uint8_t*)FW_INFO_VALIDATE_FROM;
-    const uint32_t computedCRC = crc32(st_add,FW_INFO_VALIDATE_LENGTH(firmware_info->length));
-    return computedCRC == firmware_info->crc32;
+    
+    AES_Block_t Round_keys[NUM_ROUND_KEYS_128];
+    AES_KeySchedule128(secret_key,Round_keys);
+
+    AES_Block_t aes_state = {0};
+    AES_Block_t prev_state = {0};
+
+    uint8_t bytes_t_pad = 16 - (firmware_info->length % 16);
+    if(!bytes_t_pad){
+        bytes_t_pad = 16;
+    }
+
+    memcpy(aes_state,firmware_info,AES_BLOCK_SIZE);
+    aes_cbc_mac_step(aes_state,prev_state,Round_keys);
+
+    uint32_t offset=0;
+    while(offset < firmware_info->length){
+        if(offset == FW_INFO_START_ADD - MAIN_APP_START_ADD){
+            offset += 2*AES_BLOCK_SIZE;
+            continue;
+        }
+
+        if(firmware_info->length - offset > AES_BLOCK_SIZE){
+            memcpy(aes_state,(void*)MAIN_APP_START_ADD + offset,AES_BLOCK_SIZE);
+            aes_cbc_mac_step(aes_state,prev_state,Round_keys);
+        }else{
+            if(bytes_t_pad == 16){
+                memcpy(aes_state,(void*)MAIN_APP_START_ADD + offset,AES_BLOCK_SIZE);
+                aes_cbc_mac_step(aes_state,prev_state,Round_keys);
+
+                memset(aes_state,bytes_t_pad,AES_BLOCK_SIZE);
+                aes_cbc_mac_step(aes_state,prev_state,Round_keys);
+            }else{
+                memcpy(aes_state,(void*)MAIN_APP_START_ADD+offset,AES_BLOCK_SIZE-bytes_t_pad);
+                memset((void*)(aes_state)+(AES_BLOCK_SIZE-bytes_t_pad),bytes_t_pad,bytes_t_pad);
+                aes_cbc_mac_step(aes_state,prev_state,Round_keys);
+            }
+        }
+        offset += AES_BLOCK_SIZE;
+    }
+
+    return !memcmp(signature,aes_state,AES_BLOCK_SIZE);
 }
 
 static void bootloading_failed(void){

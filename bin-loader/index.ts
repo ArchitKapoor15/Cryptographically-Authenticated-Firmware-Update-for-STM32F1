@@ -23,12 +23,9 @@ const BL_NACK                 = (0x59);
 
 const VECTOR_TABLE_SIZE       = (0x150);
 const FW_INFO_SIZE            = (10*4);
-const FW_INFO_VALIDATE_FROM   = (VECTOR_TABLE_SIZE + FW_INFO_SIZE);
 
 const FW_INFO_DEV_ID_OFFSET   = (VECTOR_TABLE_SIZE + (1 * 4));
-const FW_INFO_VERSION_OFFSET  = (VECTOR_TABLE_SIZE + (2 * 4));
 const FW_INFO_LENGTH_OFFSET   = (VECTOR_TABLE_SIZE + (3 * 4));
-const FW_INFO_CRC32_OFFSET    = (VECTOR_TABLE_SIZE + (9 * 4));
 
 const SYNC_SEQ = Buffer.from([0xC4,0x55,0x7E,0x10]);
 const DEFAULT_TIMEOUT = (5000);
@@ -153,17 +150,12 @@ const consumeFromBuffer = (n:number) => {
 }
 
 uart.on('data',data=>{
-    // console.log(`Received ${data.length} Bytes`);
     rxBuffer = Buffer.concat([rxBuffer,data]);
 
     while(rxBuffer.length >= PACKET_LENGTH){
-        // console.log('Building a Packet');
         const raw = consumeFromBuffer(PACKET_LENGTH);
         const packet = new Packet(raw[0],raw.slice(1,DATA_BYTES+1),raw[DATA_BYTES+1]);
-        // console.log(packet);
         const computedCrc = packet.computeCrc();
-        // console.log(`CRC passed, computed 0x${computedCrc.toString(16)}, got ${packet.crc.toString(16)}`);
-
 
         if(packet.crc !== computedCrc){
             console.log(`CRC failed, computed 0x${computedCrc.toString(16)}, got ${packet.crc.toString(16)}`);
@@ -178,7 +170,6 @@ uart.on('data',data=>{
         }
 
         if(packet.isAck()){
-            // console.log('Ack received');
             continue;
         }
 
@@ -187,7 +178,6 @@ uart.on('data',data=>{
             process.exit(1);
         }
 
-        // console.log('Acking and storing pkt');
         packets.push(packet);
         writePacket(Packet.ack);
     }
@@ -243,19 +233,17 @@ const syncWithBootloader = async (timeout = DEFAULT_TIMEOUT) => {
 }
 
 const main = async () => {
+    if(process.argv.length < 3){
+        console.log("Format : bin-loader <signed firmware>");
+        process.exit(1);
+    }
+
+    const firmwareFilename = process.argv[2];
+
     Logger.info('Reading the firmware image.');
-    const fwImg = await fs.readFile(path.join(process.cwd(),'firmware.bin'))
-        .then(bin => bin.slice(BOOTLOADER_SIZE));
+    const fwImg = await fs.readFile(path.join(process.cwd(),firmwareFilename));
     const fwLen = fwImg.length;
     Logger.success(`Read Firmware Image (${fwLen} bytes)`);
-
-    Logger.info('Injecting Firmware Info');
-    fwImg.writeUInt32LE(fwLen,FW_INFO_LENGTH_OFFSET); 
-    fwImg.writeUInt32LE(0x00000001,FW_INFO_VERSION_OFFSET);
-
-    const crcValue = crc32(fwImg.slice(FW_INFO_VALIDATE_FROM),fwLen - (VECTOR_TABLE_SIZE+FW_INFO_SIZE)); 
-    Logger.info(`Computed CRC = 0x${crcValue.toString(16).padStart(8,'0')}`);
-    fwImg.writeUInt32LE(crcValue,FW_INFO_CRC32_OFFSET);
 
     Logger.info('Attempting to sync with Bootloader');
     await syncWithBootloader();
